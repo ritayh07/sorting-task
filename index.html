@@ -317,4 +317,612 @@
     }
 
     .btn-download {
-      margin-top: 16px
+      margin-top: 16px;
+      background-color: #059669;
+    }
+
+    .btn-download:hover {
+      background-color: #047857;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1 id="header-title">員工內隱離職傾向測驗</h1>
+    <div id="progress-badge" class="progress-badge">準備開始</div>
+  </header>
+
+  <main>
+    <section id="screen-intro" class="intro-box">
+      <p id="intro-desc"></p>
+      <div class="form-group">
+        <label for="participant-id">受測者代碼（請勿填寫姓名或員工編號）</label>
+        <input type="text" id="participant-id" placeholder="例如：A01 或自訂代號" autocomplete="off" />
+      </div>
+      <div class="form-group">
+        <label>作答次數</label>
+        <div class="radio-group">
+          <label class="radio-option">
+            <input type="radio" name="session" value="1" checked /> 第 1 次作答
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="session" value="2" /> 第 2 次作答
+          </label>
+        </div>
+      </div>
+      <p id="form-error" style="color: var(--danger); font-size: 0.9rem; margin-top: -8px;" class="hidden">請先輸入受測者代碼。</p>
+      <button id="btn-to-instructions" class="btn-primary">下一步</button>
+    </section>
+
+    <section id="screen-instruction" class="instruction-card hidden">
+      <h2 id="block-title">區段 1 / 7</h2>
+      <p id="block-desc" style="color: #4b5563; line-height: 1.6;"></p>
+
+      <div class="category-preview">
+        <div class="preview-side">
+          <div class="key-hint">左側按鈕 / 鍵盤 <strong>E</strong> 鍵</div>
+          <div id="inst-left-categories"></div>
+        </div>
+        <div class="preview-side">
+          <div class="key-hint">右側按鈕 / 鍵盤 <strong>I</strong> 鍵</div>
+          <div id="inst-right-categories"></div>
+        </div>
+      </div>
+
+      <p style="font-size: 0.9rem; color: #6b7280; margin-bottom: 20px;">
+        請盡可能<strong>快速且正確</strong>地分類。若按錯會出現紅色提示，請改按另一側按鍵即可繼續。
+      </p>
+      <button id="btn-start-block" class="btn-primary">開始本區段（或按空白鍵）</button>
+    </section>
+
+    <section id="screen-test" class="test-area hidden">
+      <div class="top-labels">
+        <div class="side-header" id="test-left-header"></div>
+        <div class="side-header" id="test-right-header"></div>
+      </div>
+
+      <div class="stimulus-box">
+        <div id="stimulus-word" class="stimulus-word">準備</div>
+        <div id="error-feedback" class="error-feedback"></div>
+      </div>
+
+      <div class="response-buttons">
+        <button type="button" id="btn-left" class="resp-btn">
+          左側類別
+          <span class="sub-key">鍵盤 E 鍵</span>
+        </button>
+        <button type="button" id="btn-right" class="resp-btn">
+          右側類別
+          <span class="sub-key">鍵盤 I 鍵</span>
+        </button>
+      </div>
+    </section>
+
+    <section id="screen-end" class="end-card hidden">
+      <h2>作答完成</h2>
+      <p style="line-height: 1.6; color: #374151;">
+        感謝您的參與與協助！您的作答程序已全部結束。
+      </p>
+      <div id="upload-status" class="status-msg">正在處理作答資料...</div>
+      <button type="button" id="btn-download-csv" class="btn-primary btn-download hidden">
+        下載 CSV 原始資料
+      </button>
+    </section>
+  </main>
+</div>
+
+<script>
+  const CONFIG = {
+    title: "錢多多銀行－員工內隱離職傾向測驗",
+    description: "歡迎參與本次課堂研究練習。請想像您目前任職於「錢多多銀行」，接下來您將進行一項快速的字詞分類測驗，請依照螢幕上方提示將中央出現的字詞歸類到左側或右側。",
+    categories: {
+      c1: {
+        label: "留任",
+        type: "concept",
+        words: ["留任", "久任", "在職", "任職"]
+      },
+      c2: {
+        label: "離職",
+        type: "concept",
+        words: ["離職", "跳槽", "辭職", "轉行"]
+      },
+      pos: {
+        label: "自我",
+        type: "attribute",
+        words: ["自己", "本人", "個人", "自我"]
+      },
+      neg: {
+        label: "他人",
+        type: "attribute",
+        words: ["別人", "他人", "外人", "旁人"]
+      }
+    },
+    endpoint: "https://script.google.com/macros/s/AKfycbygfGFt2GQi4Fg9cfZJW2qst1Of49njLLVY1DirBgfD7sISjwqQtHUfcggjMluTp_i8Eg/exec"
+  };
+
+  const BLOCK_TRIAL_COUNTS = [20, 20, 20, 40, 20, 20, 40];
+  const ORDER = Math.random() < 0.5 ? 1 : 2;
+
+  let participantId = "";
+  let sessionNum = 1;
+  let blocksConfig = [];
+  let currentBlockIdx = 0;
+  let currentTrialsQueue = [];
+  let currentTrialIdx = 0;
+
+  let currentStimulus = null;
+  let stimulusStartTime = 0;
+  let isFirstAttemptCorrect = 1;
+  let isWaitingForResponse = false;
+  let screenState = "intro";
+
+  const rawTrials = [];
+  let finalPayload = null;
+
+  function buildBlocks() {
+    const firstLeftConcept = ORDER === 1 ? "c1" : "c2";
+    const firstRightConcept = ORDER === 1 ? "c2" : "c1";
+    const secondLeftConcept = ORDER === 1 ? "c2" : "c1";
+    const secondRightConcept = ORDER === 1 ? "c1" : "c2";
+
+    const firstPairing = ORDER === 1 ? "A" : "B";
+    const secondPairing = ORDER === 1 ? "B" : "A";
+
+    blocksConfig = [
+      {
+        block: 1,
+        trials: BLOCK_TRIAL_COUNTS[0],
+        phase: "single",
+        pairing: firstPairing,
+        leftCats: [firstLeftConcept],
+        rightCats: [firstRightConcept],
+        desc: "本區段僅分類「概念」字詞，請看清左右兩側對應的類別。"
+      },
+      {
+        block: 2,
+        trials: BLOCK_TRIAL_COUNTS[1],
+        phase: "single",
+        pairing: firstPairing,
+        leftCats: ["pos"],
+        rightCats: ["neg"],
+        desc: "本區段僅分類「屬性」字詞，請看清左右兩側對應的類別。"
+      },
+      {
+        block: 3,
+        trials: BLOCK_TRIAL_COUNTS[2],
+        phase: "practice",
+        pairing: firstPairing,
+        leftCats: [firstLeftConcept, "pos"],
+        rightCats: [firstRightConcept, "neg"],
+        desc: "本區段為「合併分類練習」，概念與屬性字詞將交替出現。"
+      },
+      {
+        block: 4,
+        trials: BLOCK_TRIAL_COUNTS[3],
+        phase: "test",
+        pairing: firstPairing,
+        leftCats: [firstLeftConcept, "pos"],
+        rightCats: [firstRightConcept, "neg"],
+        desc: "本區段為「合併分類正式測驗」，配置與上一區段相同，請保持專注並快速作答。"
+      },
+      {
+        block: 5,
+        trials: BLOCK_TRIAL_COUNTS[4],
+        phase: "single",
+        pairing: secondPairing,
+        leftCats: [secondLeftConcept],
+        rightCats: [secondRightConcept],
+        desc: "注意！概念類別的「左右位置已互換」，請重新確認左右兩側的類別標籤。"
+      },
+      {
+        block: 6,
+        trials: BLOCK_TRIAL_COUNTS[5],
+        phase: "practice",
+        pairing: secondPairing,
+        leftCats: [secondLeftConcept, "pos"],
+        rightCats: [secondRightConcept, "neg"],
+        desc: "本區段為位置互換後的「合併分類練習」，請依照上方最新標籤作答。"
+      },
+      {
+        block: 7,
+        trials: BLOCK_TRIAL_COUNTS[6],
+        phase: "test",
+        pairing: secondPairing,
+        leftCats: [secondLeftConcept, "pos"],
+        rightCats: [secondRightConcept, "neg"],
+        desc: "本區段為最後的「合併分類正式測驗」，請盡可能快速且正確地完成。"
+      }
+    ];
+  }
+
+  function generateTrialQueue(blockCfg) {
+    const count = blockCfg.trials;
+    const allCats = [...blockCfg.leftCats, ...blockCfg.rightCats];
+
+    if (allCats.length === 2) {
+      const half = count / 2;
+      const pool = [
+        ...pickBalancedWords(allCats[0], half),
+        ...pickBalancedWords(allCats[1], half)
+      ];
+      return shuffleNoImmediateRepeat(pool);
+    } else {
+      const quarter = count / 4;
+      const pool = [
+        ...pickBalancedWords(allCats[0], quarter),
+        ...pickBalancedWords(allCats[1], quarter),
+        ...pickBalancedWords(allCats[2], quarter),
+        ...pickBalancedWords(allCats[3], quarter)
+      ];
+      return shuffleNoImmediateRepeat(pool);
+    }
+  }
+
+  function pickBalancedWords(catKey, neededCount) {
+    const words = CONFIG.categories[catKey].words;
+    const result = [];
+    for (let i = 0; i < neededCount; i++) {
+      result.push({
+        category: catKey,
+        stimulus: words[i % words.length]
+      });
+    }
+    return result;
+  }
+
+  function shuffleNoImmediateRepeat(items) {
+    let arr = [...items];
+    for (let attempt = 0; attempt < 30; attempt++) {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      let hasRepeat = false;
+      for (let i = 1; i < arr.length; i++) {
+        if (arr[i].stimulus === arr[i - 1].stimulus) {
+          hasRepeat = true;
+          break;
+        }
+      }
+      if (!hasRepeat) return arr;
+    }
+    return arr;
+  }
+
+  function showScreen(name) {
+    screenState = name;
+    document.getElementById("screen-intro").classList.add("hidden");
+    document.getElementById("screen-instruction").classList.add("hidden");
+    document.getElementById("screen-test").classList.add("hidden");
+    document.getElementById("screen-end").classList.add("hidden");
+    document.getElementById(`screen-${name}`).classList.remove("hidden");
+  }
+
+  function formatCategoryTags(catKeys) {
+    return catKeys
+      .map((key, idx) => {
+        const cat = CONFIG.categories[key];
+        const cls = cat.type === "concept" ? "cat-concept" : "cat-attribute";
+        const orText = idx > 0 ? `<div style="font-size:0.8rem;color:#6b7280;margin:2px 0;">或</div>` : "";
+        return `${orText}<div class="cat-tag ${cls}">${cat.label}</div>`;
+      })
+      .join("");
+  }
+
+  function prepareBlockInstruction(blockIdx) {
+    const cfg = blocksConfig[blockIdx];
+    document.getElementById("progress-badge").textContent = `區段 ${cfg.block} / 7`;
+    document.getElementById("block-title").textContent = `第 ${cfg.block} 區段（共 7 區段）`;
+    document.getElementById("block-desc").textContent = cfg.desc;
+    document.getElementById("inst-left-categories").innerHTML = formatCategoryTags(cfg.leftCats);
+    document.getElementById("inst-right-categories").innerHTML = formatCategoryTags(cfg.rightCats);
+    showScreen("instruction");
+  }
+
+  function startCurrentBlock() {
+    const cfg = blocksConfig[currentBlockIdx];
+    currentTrialsQueue = generateTrialQueue(cfg);
+    currentTrialIdx = 0;
+
+    document.getElementById("test-left-header").innerHTML =
+      `<div class="key-badge">左鍵 / E</div>` + formatCategoryTags(cfg.leftCats);
+    document.getElementById("test-right-header").innerHTML =
+      `<div class="key-badge">右鍵 / I</div>` + formatCategoryTags(cfg.rightCats);
+
+    showScreen("test");
+    presentNextTrial();
+  }
+
+  function presentNextTrial() {
+    if (currentTrialIdx >= currentTrialsQueue.length) {
+      currentBlockIdx++;
+      if (currentBlockIdx < blocksConfig.length) {
+        prepareBlockInstruction(currentBlockIdx);
+      } else {
+        finishExperiment();
+      }
+      return;
+    }
+
+    const cfg = blocksConfig[currentBlockIdx];
+    document.getElementById("progress-badge").textContent =
+      `區段 ${cfg.block}/7（${currentTrialIdx + 1}/${cfg.trials}）`;
+
+    currentStimulus = currentTrialsQueue[currentTrialIdx];
+    const stimEl = document.getElementById("stimulus-word");
+    stimEl.textContent = currentStimulus.stimulus;
+
+    const catType = CONFIG.categories[currentStimulus.category].type;
+    stimEl.style.color = catType === "concept" ? "var(--concept-color)" : "var(--attribute-color)";
+
+    document.getElementById("error-feedback").textContent = "";
+    isFirstAttemptCorrect = 1;
+    isWaitingForResponse = true;
+    stimulusStartTime = performance.now();
+  }
+
+  function handleResponse(side) {
+    if (screenState !== "test" || !isWaitingForResponse) return;
+
+    const cfg = blocksConfig[currentBlockIdx];
+    const targetCats = side === "left" ? cfg.leftCats : cfg.rightCats;
+    const isCorrect = targetCats.includes(currentStimulus.category);
+
+    if (!isCorrect) {
+      isFirstAttemptCorrect = 0;
+      document.getElementById("error-feedback").textContent = "✕ 分類錯誤，請改按另一側按鍵";
+      return;
+    }
+
+    isWaitingForResponse = false;
+    const rtMs = Math.round(performance.now() - stimulusStartTime);
+
+    rawTrials.push({
+      block: cfg.block,
+      pairing: cfg.pairing,
+      phase: cfg.phase,
+      trial: currentTrialIdx + 1,
+      category: currentStimulus.category,
+      stimulus: currentStimulus.stimulus,
+      correct: isFirstAttemptCorrect,
+      rt_ms: rtMs
+    });
+
+    currentTrialIdx++;
+    document.getElementById("stimulus-word").textContent = "";
+    document.getElementById("error-feedback").textContent = "";
+    setTimeout(presentNextTrial, 150);
+  }
+
+  function round4(num) {
+    if (num === "" || num === null || isNaN(num)) return "";
+    return Math.round(num * 10000) / 10000;
+  }
+
+  function calcMean(arr) {
+    if (arr.length === 0) return NaN;
+    return arr.reduce((sum, v) => sum + v, 0) / arr.length;
+  }
+
+  function calcSampleSD(arr) {
+    if (arr.length <= 1) return NaN;
+    const mean = calcMean(arr);
+    const sumSqDiff = arr.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0);
+    return Math.sqrt(sumSqDiff / (arr.length - 1));
+  }
+
+  function computeScores(trials) {
+    const valid = trials.filter(
+      (t) => (t.phase === "practice" || t.phase === "test") && t.rt_ms <= 10000
+    );
+
+    const n_trials = valid.length;
+    const errorCount = valid.filter((t) => t.correct === 0).length;
+    const fastCount = valid.filter((t) => t.rt_ms < 300).length;
+
+    const error_rate = n_trials > 0 ? round4(errorCount / n_trials) : "";
+    const fast_rate = n_trials > 0 ? round4(fastCount / n_trials) : "";
+
+    const pracAll = valid.filter((t) => t.phase === "practice").map((t) => t.rt_ms);
+    const pracA = valid.filter((t) => t.phase === "practice" && t.pairing === "A").map((t) => t.rt_ms);
+    const pracB = valid.filter((t) => t.phase === "practice" && t.pairing === "B").map((t) => t.rt_ms);
+
+    const sdPrac = calcSampleSD(pracAll);
+    const rawDPrac = sdPrac > 0 ? (calcMean(pracB) - calcMean(pracA)) / sdPrac : NaN;
+
+    const testAll = valid.filter((t) => t.phase === "test").map((t) => t.rt_ms);
+    const testA = valid.filter((t) => t.phase === "test" && t.pairing === "A").map((t) => t.rt_ms);
+    const testB = valid.filter((t) => t.phase === "test" && t.pairing === "B").map((t) => t.rt_ms);
+
+    const sdTest = calcSampleSD(testAll);
+    const rawDTest = sdTest > 0 ? (calcMean(testB) - calcMean(testA)) / sdTest : NaN;
+
+    const isTooFast = n_trials > 0 && fastCount / n_trials > 0.10;
+
+    let D_practice = "";
+    let D_test = "";
+    let D = "";
+
+    if (!isTooFast && !isNaN(rawDPrac) && !isNaN(rawDTest)) {
+      D_practice = round4(rawDPrac);
+      D_test = round4(rawDTest);
+      D = round4((rawDPrac + rawDTest) / 2);
+    }
+
+    return {
+      n_trials,
+      error_rate,
+      fast_rate,
+      D_practice,
+      D_test,
+      D
+    };
+  }
+
+  async function finishExperiment() {
+    document.getElementById("progress-badge").textContent = "已完成";
+    showScreen("end");
+
+    const scoreObj = computeScores(rawTrials);
+    finalPayload = {
+      id: participantId,
+      session: sessionNum,
+      order: ORDER,
+      trials: rawTrials,
+      score: scoreObj
+    };
+
+    const statusEl = document.getElementById("upload-status");
+    const downloadBtn = document.getElementById("btn-download-csv");
+    const endpoint = (CONFIG.endpoint || "").trim();
+
+    if (!endpoint) {
+      statusEl.textContent = "請點擊下方按鈕下載原始資料檔案，並交給研究人員。";
+      downloadBtn.classList.remove("hidden");
+      return;
+    }
+
+    statusEl.textContent = "正在傳送作答資料，請稍候...";
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain"
+        },
+        body: JSON.stringify(finalPayload)
+      });
+      const text = (await response.text()).trim().toLowerCase();
+      if (response.ok && text === "ok") {
+        statusEl.textContent = "作答資料已成功傳送，您可以關閉此視窗。";
+      } else {
+        throw new Error("伺服器未回傳 ok");
+      }
+    } catch (err) {
+      statusEl.textContent = "資料傳送未成功，請點擊下方按鈕下載 CSV 原始資料交給研究人員。";
+      downloadBtn.classList.remove("hidden");
+    }
+  }
+
+  function downloadCSV() {
+    if (!finalPayload) return;
+
+    const headers = [
+      "id",
+      "session",
+      "order",
+      "block",
+      "pairing",
+      "phase",
+      "trial",
+      "category",
+      "stimulus",
+      "correct",
+      "rt_ms"
+    ];
+
+    const rows = finalPayload.trials.map((t) => [
+      escapeCSV(finalPayload.id),
+      finalPayload.session,
+      finalPayload.order,
+      t.block,
+      t.pairing,
+      t.phase,
+      t.trial,
+      t.category,
+      escapeCSV(t.stimulus),
+      t.correct,
+      t.rt_ms
+    ]);
+
+    const csvContent =
+      "\uFEFF" +
+      [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `IAT_${finalPayload.id}_S${finalPayload.session}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  function escapeCSV(val) {
+    const str = String(val ?? "");
+    if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    document.title = CONFIG.title;
+    document.getElementById("header-title").textContent = CONFIG.title;
+    document.getElementById("intro-desc").textContent = CONFIG.description;
+
+    buildBlocks();
+
+    document.getElementById("btn-to-instructions").addEventListener("click", () => {
+      const idVal = document.getElementById("participant-id").value.trim();
+      const errEl = document.getElementById("form-error");
+      if (!idVal) {
+        errEl.classList.remove("hidden");
+        return;
+      }
+      errEl.classList.add("hidden");
+      participantId = idVal;
+
+      const selectedSession = document.querySelector('input[name="session"]:checked');
+      sessionNum = selectedSession ? Number(selectedSession.value) : 1;
+
+      currentBlockIdx = 0;
+      prepareBlockInstruction(0);
+    });
+
+    document.getElementById("btn-start-block").addEventListener("click", () => {
+      if (screenState === "instruction") {
+        startCurrentBlock();
+      }
+    });
+
+    const btnLeft = document.getElementById("btn-left");
+    const btnRight = document.getElementById("btn-right");
+
+    btnLeft.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      handleResponse("left");
+    });
+
+    btnRight.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      handleResponse("right");
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (screenState === "instruction" && e.code === "Space") {
+        e.preventDefault();
+        startCurrentBlock();
+        return;
+      }
+      if (screenState === "test") {
+        const key = e.key.toLowerCase();
+        if (key === "e") {
+          e.preventDefault();
+          handleResponse("left");
+        } else if (key === "i") {
+          e.preventDefault();
+          handleResponse("right");
+        }
+      }
+    });
+
+    document.getElementById("btn-download-csv").addEventListener("click", downloadCSV);
+  });
+</script>
+
+</body>
+</html>
