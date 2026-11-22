@@ -1,0 +1,145 @@
+// 定義原始試次資料工作表的名稱
+const DATA_SHEET_NAME = "data";
+// 定義受測者總分摘要工作表的名稱
+const SCORE_SHEET_NAME = "scores";
+
+// 定義 data 工作表的第一列欄位標題陣列
+const DATA_HEADERS = [
+  "timestamp", "participant_id", "session", "order", "block",
+  "pairing", "phase", "trial", "category", "stimulus", "correct", "rt_ms"
+];
+
+// 定義 scores 工作表的第一列欄位標題陣列
+const SCORE_HEADERS = [
+  "timestamp", "participant_id", "session", "order", "n_trials",
+  "error_rate", "fast_rate", "D_practice", "D_test", "D"
+];
+
+// 輔助函式：取得指定名稱的工作表，若不存在則自動建立並寫入第一列標題
+function getOrCreateSheet(ss, sheetName, headers) {
+  // 嘗試從試算表中依名稱取得工作表
+  let sheet = ss.getSheetByName(sheetName);
+  // 判斷該工作表是否不存在
+  if (!sheet) {
+    // 若不存在則在試算表中新增此名稱的工作表
+    sheet = ss.insertSheet(sheetName);
+    // 在新工作表的第一列第一欄起寫入標題列
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  } else if (sheet.getLastRow() === 0) {
+    // 若工作表已存在但完全是空的，補寫入第一列標題
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  }
+  // 回傳取得或新建完成的工作表物件
+  return sheet;
+}
+
+// 初始化設定函式：手動執行一次以建立兩個工作表並完成 Google 帳號授權
+function setup() {
+  // 取得目前綁定的 Google 試算表物件
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  // 確保 data 工作表已建立並寫好欄位標題
+  getOrCreateSheet(ss, DATA_SHEET_NAME, DATA_HEADERS);
+  // 確保 scores 工作表已建立並寫好欄位標題
+  getOrCreateSheet(ss, SCORE_SHEET_NAME, SCORE_HEADERS);
+}
+
+// 處理 HTTP GET 請求，用於測試網址是否正常運作
+function doGet(e) {
+  // 建立純文字輸出並回傳運作中訊息
+  return ContentService.createTextOutput("IAT 接收程式運作中");
+}
+
+// 處理 IAT 網頁送來的 HTTP POST 請求
+function doPost(e) {
+  // 取得指令碼層級的鎖定服務，避免多人同時傳送造成資料交錯
+  const lock = LockService.getScriptLock();
+  // 嘗試取得鎖定，最多等待 30000 毫秒（30 秒）
+  lock.waitLock(30000);
+
+  // 使用 try...finally 區塊確保無論是否發生錯誤最後都會釋放鎖定
+  try {
+    // 檢查請求物件與傳入的純文字內容是否存在
+    if (!e || !e.postData || !e.postData.contents) {
+      // 若無資料則回傳錯誤提示文字
+      return ContentService.createTextOutput("error: empty payload");
+    }
+
+    // 將接收到的 text/plain 字串解析為 JSON 物件
+    const payload = JSON.parse(e.postData.contents);
+    // 取得目前綁定的 Google 試算表物件
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    // 取得或建立 data 原始資料工作表
+    const dataSheet = getOrCreateSheet(ss, DATA_SHEET_NAME, DATA_HEADERS);
+    // 取得或建立 scores 分數摘要工作表
+    const scoreSheet = getOrCreateSheet(ss, SCORE_SHEET_NAME, SCORE_HEADERS);
+
+    // 產生目前伺服器時間的 ISO 標準時間戳記
+    const timestamp = new Date().toISOString();
+    // 讀取受測者代碼，若無則設為空字串
+    const participantId = payload.id !== undefined ? payload.id : "";
+    // 讀取作答次數（1 或 2），若無則設為空字串
+    const session = payload.session !== undefined ? payload.session : "";
+    // 讀取配對順序（1 或 2），若無則設為空字串
+    const order = payload.order !== undefined ? payload.order : "";
+    // 讀取原始試次陣列，若無則設為空陣列
+    const trials = Array.isArray(payload.trials) ? payload.trials : [];
+    // 讀取計分結果物件，若無則設為空物件
+    const score = payload.score || {};
+
+    // 判斷 trials 陣列是否有資料需要寫入
+    if (trials.length > 0) {
+      // 將每一筆試次物件轉換為符合 DATA_HEADERS 順序的二維陣列
+      const dataRows = trials.map(function(t) {
+        // 回傳單一試次對應的 12 個欄位值
+        return [
+          timestamp,
+          participantId,
+          session,
+          order,
+          t.block,
+          t.pairing,
+          t.phase,
+          t.trial,
+          t.category,
+          t.stimulus,
+          t.correct,
+          t.rt_ms
+        ];
+      });
+      // 取得 data 工作表目前最後一列的列號
+      const lastDataRow = dataSheet.getLastRow();
+      // 使用單一次 setValues 將所有試次批次寫入 data 工作表下方
+      dataSheet.getRange(lastDataRow + 1, 1, dataRows.length, DATA_HEADERS.length).setValues(dataRows);
+    }
+
+    // 整理要寫入 scores 工作表的單一列資料（共 10 個欄位）
+    const scoreRow = [[
+      timestamp,
+      participantId,
+      session,
+      order,
+      score.n_trials !== undefined ? score.n_trials : "",
+      score.error_rate !== undefined ? score.error_rate : "",
+      score.fast_rate !== undefined ? score.fast_rate : "",
+      score.D_practice !== undefined ? score.D_practice : "",
+      score.D_test !== undefined ? score.D_test : "",
+      score.D !== undefined ? score.D : ""
+    ]];
+
+    // 取得 scores 工作表目前最後一列的列號
+    const lastScoreRow = scoreSheet.getLastRow();
+    // 將分數摘要列寫入 scores 工作表下方
+    scoreSheet.getRange(lastScoreRow + 1, 1, 1, SCORE_HEADERS.length).setValues(scoreRow);
+
+    // 強制刷新試算表緩衝區，確保資料已確實寫入
+    SpreadsheetApp.flush();
+    // 回傳純文字 ok 代表接收與寫入成功
+    return ContentService.createTextOutput("ok");
+  } catch (err) {
+    // 若解析或寫入過程發生異常，回傳錯誤訊息方便除錯
+    return ContentService.createTextOutput("error: " + err.message);
+  } finally {
+    // 釋放指令碼鎖定，讓下一位受測者的請求可以繼續執行
+    lock.releaseLock();
+  }
+}
